@@ -49,6 +49,7 @@ A React-based dashboard for monitoring backup jobs, detecting anomalies, visuali
 
 ## 📂 Project Structure
 
+```
 src/
 ├── components/        # Reusable UI components
 ├── pages/             # Main app pages (Dashboard, Jobs, Timeline, etc.)
@@ -62,20 +63,20 @@ src/
 
 ## ▶️ Getting Started
 
-### **1. Install dependencies**
-```bash
+**1. Install dependencies**
+bash
 npm install
-```
-2. Run development server
+
+**2. Run development server**
    npm run dev
 
-3. Build for production
+**3. Build for production**
    npm run build
 
-4. Preview production build
+**4. Preview production build**
    npm run preview
 
-⚙️ Configuration
+**⚙️ Configuration**
 
 - Update src/config.js to point to your backend API:
 export const API_BASE_URL = "http://your-backend.url/api";
