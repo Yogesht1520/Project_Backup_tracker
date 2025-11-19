@@ -49,7 +49,6 @@ A React-based dashboard for monitoring backup jobs, detecting anomalies, visuali
 
 ## 📂 Project Structure
 
-```
 src/
 ├── components/        # Reusable UI components
 ├── pages/             # Main app pages (Dashboard, Jobs, Timeline, etc.)
