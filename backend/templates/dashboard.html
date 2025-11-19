@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Backup Tracker Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; margin: 24px; }
+    h1 { color: #333; margin-bottom: 10px; }
+    #stats { display: flex; gap: 18px; margin-bottom: 18px; }
+    .card { border-radius: 8px; padding: 12px 20px; color: white; flex: 1; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+    .success { background-color: #28a745; }
+    .failed { background-color: #dc3545; }
+    .pending { background-color: #ffc107; color: black; }
+    .total { background-color: #007bff; }
+    .alert-box { border-radius:6px; border: 1px solid #dc3545; background: #fff0f0; color: #b30000; padding: 10px; margin-bottom: 12px; display: none; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 18px; }
+    th, td { padding: 8px 10px; border: 1px solid #e0e0e0; text-align: left; vertical-align: middle; }
+    th { background-color: #f7f7f7; font-weight:600; }
+    .status-success { color: green; font-weight: 700; }
+    .status-pending { color: orange; font-weight: 700; }
+    .status-failed  { color: red; font-weight: 700; }
+    .controls { display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    .controls label { font-size:14px; margin-right:6px; }
+    .pill { padding:6px 10px; border-radius: 6px; background:#f1f1f1; font-size:13px; display:inline-block; }
+    .small-btn { padding:6px 10px; border-radius:6px; border:none; cursor:pointer; background:#007bff; color:white; }
+    .export-btn { background:#333; }
+    .spark-canvas { width:120px; height:30px; }
+    #collectorHealth { display:inline-block; margin-left:12px; vertical-align: middle; }
+    .badge { display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:8px; vertical-align:middle; }
+  </style>
+</head>
+<body>
+  <h1>📊 Backup Tracker Dashboard</h1>
+
+  <div id="stats">
+    <div class="card total">Total<br><span id="total">0</span></div>
+    <div class="card success">Success<br><span id="success">0</span></div>
+    <div class="card failed">Failed<br><span id="failed">0</span></div>
+    <div class="card pending">Pending<br><span id="pending">0</span></div>
+  </div>
+
+  <div class="alert-box" id="alertBox"></div>
+
+  <canvas id="statusChart" width="400" height="180"></canvas>
+
+  <form id="createJobForm" style="margin-top:10px;">
+    <input type="text" id="jobName" placeholder="Enter job name" required>
+    <button type="submit">Create Job</button>
+  </form>
+
+  <br>
+
+  <table id="jobTable" aria-live="polite">
+    <thead>
+      <tr>
+        <th>ID</th><th>Name</th><th>Status</th><th>Timestamp</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- Existing chart + socket code (unchanged) -->
+  <script>
+    let chart;
+    async function loadJobs() {
+      const res = await fetch('/api/jobs'); const jobs = await res.json();
+      const tbody = document.querySelector('#jobTable tbody'); tbody.innerHTML = '';
+      jobs.forEach(job => {
+        const row = document.createElement('tr');
+        const statusClass = {'SUCCESS':'status-success','FAILED':'status-failed','PENDING':'status-pending'}[job.status] || '';
+        row.innerHTML = `<td>${job.id}</td><td>${job.name}</td><td class="${statusClass}">${job.status}</td><td>${job.timestamp}</td>`;
+        tbody.appendChild(row);
+      });
+    }
+    async function loadStats(){
+      const res = await fetch('/api/stats'); const stats = await res.json();
+      document.getElementById('total').textContent = stats.total;
+      document.getElementById('success').textContent = stats.success;
+      document.getElementById('failed').textContent = stats.failed;
+      document.getElementById('pending').textContent = stats.pending;
+      if (chart) { chart.data.datasets[0].data = [stats.success, stats.failed, stats.pending]; chart.update(); }
+      const alertBox = document.getElementById('alertBox');
+      if (stats.failed > 0) { alertBox.style.display='block'; alertBox.innerHTML = `⚠️ ${stats.failed} job(s) failed! Please investigate.`; } else { alertBox.style.display='none'; }
+    }
+    async function refreshAll(){ await loadJobs(); await loadStats(); }
+    refreshAll(); setInterval(refreshAll, 5000);
+
+    document.getElementById('createJobForm').addEventListener('submit', async (e)=> {
+      e.preventDefault();
+      const jobName = document.getElementById('jobName').value;
+      await fetch('/create_job', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ job_name: jobName }) });
+      document.getElementById('jobName').value=''; refreshAll();
+    });
+  </script>
+
+  <script>
+    const ctx = document.getElementById('statusChart');
+    chart = new Chart(ctx, {
+      type:'bar',
+      data:{ labels:['Success','Failed','Pending'], datasets:[{ label:'Job Count', data:[0,0,0], backgroundColor:['#28a745','#dc3545','#ffc107'] }]},
+      options:{ scales:{ y:{ beginAtZero:true } } }
+    });
+  </script>
+
+  <!-- ---------------- Vault management (keeps the existing UI you had earlier) ---------------- -->
+  <h3>🔐 Vault Management</h3>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" id="vaultFile" name="file" required>
+    <button type="submit">Upload & Encrypt</button>
+  </form>
+
+  <br>
+  <h4>Stored Encrypted Files</h4>
+  <table border="1" width="100%">
+    <thead><tr><th>Filename</th><th>Size (KB)</th><th>Last Modified</th><th>Action</th></tr></thead>
+    <tbody id="vaultTableBody"><tr><td colspan="4" style="text-align:center;">Loading...</td></tr></tbody>
+  </table>
+
+  <script>
+    const socket = (window.io ? io() : (typeof io !== 'undefined' ? io() : null));
+    async function loadVaultFiles(){
+      try {
+        const res = await fetch('/vault/list'); const files = await res.json();
+        const tbody = document.getElementById('vaultTableBody'); tbody.innerHTML='';
+        if (!files || files.length===0) { tbody.innerHTML='<tr><td colspan="4" style="text-align:center;">No encrypted files found</td></tr>'; return; }
+        files.forEach(file => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${file.name}</td><td>${file.size_kb}</td><td>${file.modified}</td><td>
+            <button onclick="downloadFile('${file.name}')">Restore</button>
+            <button onclick="verifyFile('${file.name}')">Verify</button>
+            <span id="verify-${file.name}" class="verify-status"></span>
+          </td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (err) { console.error('vault load err', err); }
+    }
+    async function downloadFile(filename){
+      const res = await fetch(`/vault/restore/${filename}`);
+      if (res.ok){ const blob = await res.blob(); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = filename.replace('.enc',''); link.click(); }
+      else { const e = await res.json(); alert(e.error || 'Failed to restore file'); }
+    }
+    document.getElementById('uploadForm').addEventListener('submit', async (e)=> {
+      e.preventDefault();
+      const formData = new FormData(); formData.append('file', document.getElementById('vaultFile').files[0]);
+      const res = await fetch('/vault/upload',{ method:'POST', body: formData }); const result = await res.json(); alert(result.message); loadVaultFiles();
+    });
+
+    loadVaultFiles();
+
+    // socket vault update
+    if (socket) {
+      socket.on('vault_update', data => { alert(data.message); loadVaultFiles(); });
+    }
+  </script>
+
+  <!-- ---------------- Unified Anomaly Timeline + Controls ---------------- -->
+  <h2>🧠 Unified Anomaly Timeline</h2>
+
+  <div class="controls">
+    <div>
+      <label class="pill">Metric:</label>
+      <select id="filterMetric">
+        <option value="All">All</option>
+        <option value="CPU">CPU</option>
+        <option value="RAM">RAM</option>
+        <option value="Disk">Disk</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="pill">Severity:</label>
+      <select id="filterSeverity">
+        <option value="All">All</option>
+        <option value="High">High</option>
+        <option value="Medium">Medium</option>
+        <option value="Low">Low</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="pill">Source:</label>
+      <select id="filterSource">
+        <option value="All">All</option>
+        <option value="Rule-Based">Rule-Based</option>
+        <option value="ML">ML</option>
+      </select>
+    </div>
+
+    <button id="exportCsv" class="small-btn export-btn">Export Visible CSV</button>
+    <div id="collectorHealth">
+      <span class="badge" id="collectorBadge" style="background:gray;"></span>
+      <span id="collectorText">Collector: Unknown</span>
+    </div>
+  </div>
+
+  <table id="timelineTable">
+    <thead>
+      <tr><th>Timestamp</th><th>Source</th><th>Metric</th><th>Value</th><th>Severity</th><th>Trend</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    // State
+    window.sparkCharts = []; // hold mini-chart references so we can destroy them
+    let displayedEvents = []; // last loaded and filtered events
+
+    // Utility: severity mapping for rule-based rows (if not provided)
+    function inferSeverity(metric, value) {
+      const v = parseFloat(value);
+      if (metric === 'CPU') return v >= 90 ? 'High' : v >= 75 ? 'Medium' : 'Low';
+      if (metric === 'RAM') return v >= 90 ? 'High' : v >= 75 ? 'Medium' : 'Low';
+      if (metric === 'Disk') return v >= 95 ? 'High' : v >= 85 ? 'Medium' : 'Low';
+      return 'Low';
+    }
+
+    // Fetch timeline from backend
+    async function fetchTimeline() {
+      const res = await fetch('/api/anomaly_timeline');
+      const data = await res.json();
+      // data should be array of objects: {timestamp, metric, value, source, severity}
+      return Array.isArray(data) ? data : [];
+    }
+
+    // Fetch recent metric series (last N points) from /api/anomalies
+    async function getRecentMetricValues(metric, limit=10) {
+      try {
+        const res = await fetch('/api/anomalies');
+        const arr = await res.json();
+        if (!Array.isArray(arr) || arr.length === 0) return [];
+        // pick last 'limit' entries and map to metric field naming differences
+        const mapping = { 'CPU': 'cpu_percent', 'RAM': 'ram_percent', 'Disk': 'disk_percent' };
+        let key = mapping[metric];
+
+        // ML “Composite” metric -> fallback to CPU sparkline
+        if (!key && metric === "Composite") {
+            key = "cpu_percent";
+        }
+
+        // If still no valid key, return empty
+        if (!key) return [];
+        const values = arr.slice(-limit).map(r => r[key] == null ? null : Number(r[key]));
+        return values;
+      } catch (e) { return []; }
+    }
+
+    // Render timeline table rows (with filters applied)
+    async function renderTimeline() {
+      // clear any existing mini charts
+      window.sparkCharts.forEach(c => { try { c.destroy(); } catch(e){} });
+      window.sparkCharts = [];
+
+      const raw = await fetchTimeline();
+      const metricFilter = document.getElementById('filterMetric').value;
+      const severityFilter = document.getElementById('filterSeverity').value;
+      const sourceFilter = document.getElementById('filterSource').value;
+
+      // Normalize / infer severity if missing
+      const normalized = raw.map(r => {
+        const copy = Object.assign({}, r);
+        if (!copy.severity || copy.severity === "") {
+          copy.severity = inferSeverity(copy.metric || 'Unknown', copy.value || 0);
+        }
+        return copy;
+      });
+
+      // Apply filters
+      displayedEvents = normalized.filter(e => {
+        if (metricFilter !== 'All' && e.metric !== metricFilter) return false;
+        if (severityFilter !== 'All' && e.severity !== severityFilter) return false;
+        if (sourceFilter !== 'All' && e.source !== sourceFilter) return false;
+        return true;
+      });
+
+      // Sort newest-first by timestamp if possible
+      displayedEvents.sort((a,b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+      const tbody = document.querySelector('#timelineTable tbody');
+      tbody.innerHTML = '';
+      let i = 0;
+      for (const ev of displayedEvents) {
+        const tr = document.createElement('tr');
+        const sev = ev.severity || inferSeverity(ev.metric, ev.value);
+        const sevColor = sev === 'High' ? 'red' : sev === 'Medium' ? 'orange' : 'green';
+        // create a unique id for the spark canvas
+        const sparkId = `spark-${i}-${Date.now()}`;
+        tr.innerHTML = `
+          <td>${ev.timestamp || ''}</td>
+          <td>${ev.source || 'Unknown'}</td>
+          <td>${ev.metric || 'Unknown'}</td>
+          <td>${ev.value != null ? ev.value : '—'}</td>
+          <td style="color:${sevColor}; font-weight:700;">${sev}</td>
+          <td><canvas id="${sparkId}" class="spark-canvas"></canvas></td>
+        `;
+        tbody.appendChild(tr);
+
+        // draw sparkline for the metric (fire & forget)
+        (async function(metric, canvasId){
+          const series = await getRecentMetricValues(metric, 10);
+          // if empty or all null, render placeholder line
+          const ctx = document.getElementById(canvasId).getContext('2d');
+          const cfg = {
+            type: 'line',
+            data: { labels: series.map((_,idx)=>''), datasets:[{ data: series.map(v => v==null?null:v), borderWidth:1, fill:false, pointRadius:0, tension:0.3 }]},
+            options: {
+              responsive:false,
+              maintainAspectRatio:false,
+              scales:{ x:{ display:false }, y:{ display:false, min:0, max:100 } },
+              elements:{ line:{ borderColor: (sevColor || 'black') }, point:{ radius:0 } },
+              plugins:{ legend:{ display:false }, tooltip:{ enabled:false } }
+            }
+          };
+          try {
+            const c = new Chart(ctx, cfg);
+            window.sparkCharts.push(c);
+          } catch(e){
+            console.warn('spark draw err', e);
+          }
+        })(ev.metric, sparkId);
+
+        i++;
+      }
+    }
+
+    // Set up filters to re-render on change
+    document.getElementById('filterMetric').addEventListener('change', renderTimeline);
+    document.getElementById('filterSeverity').addEventListener('change', renderTimeline);
+    document.getElementById('filterSource').addEventListener('change', renderTimeline);
+
+    // Export visible timeline rows to CSV
+    document.getElementById('exportCsv').addEventListener('click', (e) => {
+      if (!displayedEvents || displayedEvents.length === 0) { alert('No rows to export'); return; }
+      const headers = ['timestamp','source','metric','value','severity'];
+      const csv = [headers.join(',')];
+      displayedEvents.forEach(r => {
+        const row = headers.map(h => `"${(r[h] !== undefined && r[h] !== null) ? String(r[h]).replace(/"/g,'""') : ''}"`).join(',');
+        csv.push(row);
+      });
+      const blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `anomaly_timeline_${(new Date()).toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Auto-refresh timeline every 5s
+    setInterval(renderTimeline, 5000);
+    renderTimeline();
+
+    // ----------------- Collector Health indicator -----------------
+    const collectorBadge = document.getElementById('collectorBadge');
+    const collectorText = document.getElementById('collectorText');
+
+    // Provide helper to push a small alert (toast style - simple)
+    function pushAlert(msg, color){
+      const prev = document.getElementById('smallToast');
+      if (prev) prev.remove();
+      const el = document.createElement('div');
+      el.id='smallToast';
+      el.style.position='fixed';
+      el.style.right='18px';
+      el.style.bottom='18px';
+      el.style.padding='10px 14px';
+      el.style.background=color;
+      el.style.color='white';
+      el.style.borderRadius='8px';
+      el.style.boxShadow='0 3px 8px rgba(0,0,0,0.12)';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(()=>{ try{ el.remove(); }catch(e){} }, 3000);
+    }
+
+    // Socket events for collector connectivity and anomaly notifications
+    if (socket) {
+      socket.on('connect', () => {
+        collectorBadge.style.background = 'green';
+        collectorText.textContent = 'Collector: Connected';
+        pushAlert('🟢 Collector connected', 'green');
+      });
+
+      socket.on('disconnect', () => {
+        collectorBadge.style.background = 'orange';
+        collectorText.textContent = 'Collector: Disconnected';
+        pushAlert('⚠️ Collector disconnected!', 'orange');
+      });
+
+      // Also update timeline on server-sent anomaly events
+      socket.on('anomaly_alert', (data) => {
+        // example data: {timestamp, metric, value, source:'ML' or 'Rule'}
+        // After an event arrives, refresh timeline immediately
+        renderTimeline();
+        // show small notification
+        pushAlert(`⚠️ ${data.metric || 'Metric'} anomaly: ${data.value || ''}`, 'red');
+      });
+    } else {
+      // no socket available
+      collectorBadge.style.background = 'gray';
+      collectorText.textContent = 'Collector: Socket not loaded';
+    }
+
+  </script>
+
+  <!-- ---------------- Live Metrics Chart (keeps previous code) ---------------- -->
+  <div id="anomalySection">
+    <div id="anomalyStatus" style="margin-bottom:10px;">
+      <span id="statusBadge" style="display:inline-block;width:15px;height:15px;border-radius:50%;background-color:green;margin-right:6px;"></span>
+      <strong id="statusText">System Stable</strong>
+    </div>
+
+    <h3>📈 System Anomalies (CPU %)</h3>
+    <canvas id="anomalyChart" width="600" height="250"></canvas>
+  </div>
+
+  <script>
+    // Minimal anomaly chart loader (your existing /api/anomalies loader)
+    async function loadAnomalyData() {
+      try {
+        const res = await fetch("/api/anomalies");
+        const data = await res.json();
+        if (!Array.isArray(data)) return;
+        const labels = data.map(d => d.timestamp);
+        const cpu = data.map(d => d.cpu_percent);
+        const anomaly = data.map(d => d.anomaly_label === "Anomaly" ? d.cpu_percent : null);
+        const ctx = document.getElementById("anomalyChart").getContext("2d");
+        if (window.anomalyChart && typeof window.anomalyChart.destroy === "function") window.anomalyChart.destroy();
+        window.anomalyChart = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              { label: "CPU Usage (%)", data: cpu, borderWidth: 2, borderColor: "blue", fill: false },
+              { label: "Detected Anomalies", data: anomaly, pointRadius: 5, pointBackgroundColor: "red", showLine: false }
+            ]
+          },
+          options: { responsive:true, scales:{ y:{ beginAtZero:true, max:100 } } }
+        });
+
+        // update status badge
+        const isAnomaly = data.some(d => d.anomaly_label === "Anomaly");
+        const badge = document.getElementById("statusBadge");
+        const text = document.getElementById("statusText");
+        if (isAnomaly) { badge.style.backgroundColor = "red"; text.textContent = "⚠️  Anomaly Detected!"; text.style.color = "red"; }
+        else { badge.style.backgroundColor = "green"; text.textContent = "System Stable"; text.style.color = "green"; }
+
+      } catch (err) { console.error("Error loading anomalies:", err); }
+    }
+    setInterval(loadAnomalyData, 10000);
+    loadAnomalyData();
+
+    // Live metrics chart (keeps showing streaming data if socket sends 'metrics_update')
+    (function initLiveChart(){
+      const canvas = document.getElementById('liveMetricsChart');
+      if (!canvas) {
+        // inject the live chart element lower in the page if not found
+        const container = document.createElement('div');
+        container.style.width = '100%';
+        container.style.maxWidth = '900px';
+        const c = document.createElement('canvas'); c.id='liveMetricsChart';
+        container.appendChild(c);
+        document.body.appendChild(container);
+      }
+    })();
+
+    // create liveChart only when canvas exists
+    const liveCtx = document.getElementById('liveMetricsChart') ? document.getElementById('liveMetricsChart').getContext('2d') : null;
+    let liveChart = null;
+    if (liveCtx) {
+      liveChart = new Chart(liveCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [
+          { label: 'CPU %', data: [], borderColor: 'red', borderWidth: 2, fill:false },
+          { label: 'RAM %', data: [], borderColor: 'blue', borderWidth: 2, fill:false },
+          { label: 'Disk %', data: [], borderColor: 'green', borderWidth: 2, fill:false }
+        ]},
+        options: { responsive:true, scales:{ y:{ beginAtZero:true, max:100 } } }
+      });
+    }
+
+    if (socket && liveChart) {
+      socket.on('metrics_update', data => {
+        const { timestamp, cpu, ram, disk } = data;
+        if (liveChart.data.labels.length > 15) {
+          liveChart.data.labels.shift();
+          liveChart.data.datasets.forEach(ds => ds.data.shift());
+        }
+        liveChart.data.labels.push(timestamp);
+        liveChart.data.datasets[0].data.push(cpu);
+        liveChart.data.datasets[1].data.push(ram);
+        liveChart.data.datasets[2].data.push(disk);
+        liveChart.update();
+      });
+    }
+  </script>
+
+</body>
+</html>
