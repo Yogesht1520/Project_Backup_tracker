@@ -48,6 +48,8 @@ A React-based dashboard for monitoring backup jobs, detecting anomalies, visuali
 ---
 
 ## 📂 Project Structure
+
+```
 src/
 ├── components/        # Reusable UI components
 ├── pages/             # Main app pages (Dashboard, Jobs, Timeline, etc.)
@@ -55,10 +57,9 @@ src/
 ├── App.jsx            # Main app container
 ├── main.jsx           # Entry point
 └── config.js          # API endpoints or environment config
+```
 
 
-
----
 
 ## ▶️ Getting Started
 
