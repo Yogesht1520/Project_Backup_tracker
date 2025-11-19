@@ -76,7 +76,3 @@ npm install
 **4. Preview production build**
    npm run preview
 
-**⚙️ Configuration**
-
-- Update src/config.js to point to your backend API:
-export const API_BASE_URL = "http://your-backend.url/api";
