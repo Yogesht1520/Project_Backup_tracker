@@ -10,6 +10,10 @@ A React-based dashboard for monitoring backup jobs, detecting anomalies, visuali
 - Backup success/failure summaries
 - Key metrics and quick-glance statistics
 
+**Dashboard Screenshot**
+![WhatsApp Image 2025-11-19 at 20 56 42_5ccd6dc9](https://github.com/user-attachments/assets/17da9ccf-d400-4807-9ad4-f45efe0756f9)
+
+
 ### 🕒 **Timeline View**
 - Visual representation of backup job timelines  
 - Filter by job type, status, or time range
