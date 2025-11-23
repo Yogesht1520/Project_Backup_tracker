@@ -5,6 +5,7 @@ export default function VaultManager() {
   const [files, setFiles] = useState([]);
   const [message, setMessage] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState({});
 
   // Establish socket connection (same-origin backend)
   const socket = io();
@@ -91,6 +92,18 @@ export default function VaultManager() {
       alert("Restore failed");
     }
   };
+    async function verifyFile(filename) {
+      setVerifyStatus(prev => ({ ...prev, [filename]: "checking" }));
+
+      const res = await fetch(`/vault/verify/${filename}`);
+      const data = await res.json();
+
+      if (data.verified) {
+        setVerifyStatus(prev => ({ ...prev, [filename]: "ok" }));
+      } else {
+        setVerifyStatus(prev => ({ ...prev, [filename]: "bad" }));
+      }
+  }
 
   return (
     <div className="bg-white shadow rounded-lg p-5 space-y-4">
@@ -160,6 +173,23 @@ export default function VaultManager() {
                     >
                       Restore
                     </button>
+
+                    <button
+                      onClick={() => verifyFile(file.name)}
+                      className="px-3 py-1 bg-yellow-600 text-white rounded"
+                    >
+                        Verify
+                      </button>
+                    <span className="ml-3 text-xl">
+                        {verifyStatus[file.name] === "checking" && "⏳"}
+                        {verifyStatus[file.name] === "ok" && "✔"}
+                        {verifyStatus[file.name] === "bad" && "❌"}
+
+                        {/* Default view: if user has NOT clicked verify yet }
+                        {verifyStatus[file.name] === undefined && file.has_hash && "✔"}
+                        {verifyStatus[file.name] === undefined && !file.has_hash && "❌"*/} 
+                        {verifyStatus[file.name] === undefined && "✔"}
+                        </span>
 
                     {/* You can add "Verify" later when backend route is built */}
                   </td>

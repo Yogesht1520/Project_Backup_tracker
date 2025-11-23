@@ -8,7 +8,8 @@ import hashlib
 from datetime import datetime
 from urllib.parse import quote_plus
 from cryptography.fernet import Fernet
-
+import smtplib
+from email.message import EmailMessage
 from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
@@ -49,7 +50,7 @@ fernet = Fernet(key)
 # ----------------------------------------
 app = Flask(__name__)
 password = quote_plus("root")
-app.config['SQLALCHEMY_DATABASE_URI'] = f"mysql+pymysql://root:{password}@localhost/backup_tracker"
+app.config['SQLALCHEMY_DATABASE_URI'] = f"mysql+pymysql://root:Be/1229/2019-20@localhost/backup_tracker"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
@@ -81,6 +82,17 @@ logger.info("Flask Backup Tracker Started")
 scheduler = APScheduler()
 
 
+def send_alert_email(failed_count):
+    msg = EmailMessage()
+    msg.set_content(f"{failed_count} backup job(s) failed!")
+    msg['Subject'] = 'Backup Tracker Alert'
+    msg['From'] = 'yogesht1520@gmail.com'
+    msg['To'] = 'yt6399941@gmail.com'
+    with smtplib.SMTP('smtp.gmail.com', 587) as s:
+        s.starttls()
+        s.login('yogesht1520@gmail.com', 'nbyrpwtwyliswsjf')
+        s.send_message(msg)
+
 def update_jobs():
     with app.app_context():
 
@@ -107,6 +119,10 @@ def update_jobs():
                 "cpu": cpu_value,
                 "message": "CPU anomaly detected"
             })
+ 
+        if stats["failed"] > 7:
+            send_alert_email(stats["failed"])
+
 
 
 with app.app_context():
@@ -223,6 +239,33 @@ def vault_upload():
 
     return jsonify({"message": "Encrypted & stored", "filename": encrypted_name})
 
+
+@app.route('/vault/verify/<filename>', methods=['GET'])
+def vault_verify(filename):
+    """Verify integrity of encrypted file using its hash"""
+    file_path = os.path.join(VAULT_DIR, filename)
+    hash_path = file_path + ".hash"
+
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Encrypted file not found"}), 404
+    if not os.path.exists(hash_path):
+        return jsonify({"error": "Hash file missing"}), 404
+
+    stored_hash = open(hash_path).read().strip()
+    current_hash = compute_sha256(file_path)
+
+    if stored_hash == current_hash:
+        return jsonify({"verified": True, "message": "✅ Integrity check passed"})
+    else:
+        return jsonify({"verified": False, "message": "⚠️ File integrity compromised!"})
+
+    with open(file_path, "rb") as f:
+        decrypted_data = fernet.decrypt(f.read())
+    restore_path = os.path.join(DECRYPT_DIR, filename.replace(".enc", ""))
+    with open(restore_path, "wb") as f:
+        f.write(decrypted_data)
+
+    return send_file(restore_path, as_attachment=True)
 
 @app.route("/vault/restore/<filename>")
 def vault_restore(filename):
